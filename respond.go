@@ -67,7 +67,11 @@ func main() {
                     respTCP,
                     gopacket.Payload([]byte{1, 2, 3, 4}))
                 packetData := buf.Bytes()
-                fmt.Println(packetData)
+                fmt.Printf("Replying to %s::%s\n", ip4.SrcIP.String(), tcp.SrcPort.String())
+                err = handle.WritePacketData(packetData)
+                if err != nil {
+                    fmt.Println(err)
+                }
             }
         }
     }
