@@ -10,20 +10,6 @@ import (
     "github.com/google/gopacket/pcap"
 )
 
-const test = false
-
-var testPacketBytes = []byte {
-    0x40, 0xc7, 0x29, 0x30, 0xb1, 0x3c, 0xd0, 0x50, 0x99, 0x73, 0xd1, 0x19, 0x08, 0x00, 0x45, 0x00,
-    0x00, 0x73, 0x8d, 0xb1, 0x40, 0x00, 0x40, 0x06, 0xb7, 0xa8, 0xc0, 0xa8, 0x01, 0x0b, 0x68, 0x1b,
-    0xcb, 0x5c, 0xb4, 0x42, 0x00, 0x50, 0x80, 0x20, 0x5a, 0x2d, 0xf2, 0xf6, 0x3b, 0xe2, 0x50, 0x18,
-    0x00, 0xe5, 0xf5, 0x90, 0x00, 0x00, 0x47, 0x45, 0x54, 0x20, 0x2f, 0x20, 0x48, 0x54, 0x54, 0x50,
-    0x2f, 0x31, 0x2e, 0x31, 0x0d, 0x0a, 0x48, 0x6f, 0x73, 0x74, 0x3a, 0x20, 0x77, 0x77, 0x77, 0x2e,
-    0x6c, 0x6f, 0x6c, 0x2e, 0x63, 0x6f, 0x6d, 0x0d, 0x0a, 0x55, 0x73, 0x65, 0x72, 0x2d, 0x41, 0x67,
-    0x65, 0x6e, 0x74, 0x3a, 0x20, 0x63, 0x75, 0x72, 0x6c, 0x2f, 0x37, 0x2e, 0x34, 0x37, 0x2e, 0x30,
-    0x0d, 0x0a, 0x41, 0x63, 0x63, 0x65, 0x70, 0x74, 0x3a, 0x20, 0x2a, 0x2f, 0x2a, 0x0d, 0x0a, 0x0d,
-    0x0a,
-}
-
 func ip4Checksum(ip4 *layers.IPv4) uint16 {
     sum := 0x4500 + uint32(ip4.Length) + uint32(ip4.Id) + (uint32(ip4.TTL) << 8) + uint32(ip4.Protocol)
     sum += (uint32(ip4.SrcIP[0]) << 8) + uint32(ip4.SrcIP[1])
@@ -38,34 +24,40 @@ func ip4Checksum(ip4 *layers.IPv4) uint16 {
 
 func main() {
     var (
-        device       string = "eth0"
-        snapshot_len int32  = 1024
-        promiscuous  bool   = false
-        err          error
-        timeout      time.Duration = 30 * time.Second
-        handle       *pcap.Handle
-        packetSource chan gopacket.Packet
+        device        string = "eth0"
+        snapshot_len  int32  = 1024
+        promiscuous   bool   = false
+        err           error
+        timeout       time.Duration = 30 * time.Second
+        handle        *pcap.Handle
+        packetSource  chan gopacket.Packet
+        lastPacket    gopacket.Packet
+        packetChannel chan *gopacket.Packet
     )
 
     handle, err = pcap.OpenLive(device, snapshot_len, promiscuous, timeout)
     if err != nil { log.Fatal(err) }
     defer handle.Close()
 
-    if test {
-        packetSource = make(chan gopacket.Packet, 1)
-        packetSource <- gopacket.NewPacket(testPacketBytes, layers.LayerTypeEthernet, gopacket.Default)
-    } else {
-        packetSource = gopacket.NewPacketSource(handle, handle.LinkType()).Packets()
-    }
+    packetChannel = make(chan *gopacket.Packet)
+    packetSource = gopacket.NewPacketSource(handle, handle.LinkType()).Packets()
 
     for packet := range packetSource {
-        go func() {
+        if lastPacket == packet {
+            continue
+        }
+        lastPacket = packet
+
+        go func(packetChannel chan *gopacket.Packet) {
             var eth layers.Ethernet
             var ip4 layers.IPv4
             var tcp layers.TCP
+
+            curPacket := *<- packetChannel
             decoded := []gopacket.LayerType{}
             parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &tcp)
-            err := parser.DecodeLayers(packet.Data(), &decoded)
+            err := parser.DecodeLayers(curPacket.Data(), &decoded)
+
             if err == nil {
                 var respEth *layers.Ethernet
                 var respIP4 *layers.IPv4
@@ -107,16 +99,19 @@ func main() {
                     buf := gopacket.NewSerializeBuffer()
                     opts := gopacket.SerializeOptions{}
                     payload := gopacket.Payload(payloadStr)
+
                     respIP4.Checksum = ip4Checksum(respIP4)
                     respTCP.SetNetworkLayerForChecksum(respIP4)
                     respTCP.Payload = payload
                     respTCP.Checksum, err = respTCP.ComputeChecksum()
+
                     gopacket.SerializeLayers(buf, opts,
                         respEth,
                         respIP4,
                         respTCP,
                         payload)
                     packetData := buf.Bytes()
+
                     err = handle.WritePacketData(packetData)
                     fmt.Printf("Replying to %s::%d\n", ip4.SrcIP.String(), tcp.SrcPort)
                     if err != nil {
@@ -124,6 +119,8 @@ func main() {
                     }
                 }
             }
-        }()
+        }(packetChannel)
+
+        packetChannel <- &packet
     }
 }
