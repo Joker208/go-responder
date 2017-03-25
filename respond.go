@@ -57,14 +57,14 @@ func main() {
     } else {
         packetSource = gopacket.NewPacketSource(handle, handle.LinkType()).Packets()
     }
-    var eth layers.Ethernet
-    var ip4 layers.IPv4
-    var tcp layers.TCP
-    decoded := []gopacket.LayerType{}
-    parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &tcp)
 
     for packet := range packetSource {
         go func() {
+            var eth layers.Ethernet
+            var ip4 layers.IPv4
+            var tcp layers.TCP
+            decoded := []gopacket.LayerType{}
+            parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &tcp)
             err := parser.DecodeLayers(packet.Data(), &decoded)
             if err == nil {
                 var respEth *layers.Ethernet
@@ -106,14 +106,16 @@ func main() {
                     const payloadStr = "HTTP/1.1 404 Not Found\r\n"
                     buf := gopacket.NewSerializeBuffer()
                     opts := gopacket.SerializeOptions{}
+                    payload := gopacket.Payload(payloadStr)
                     respIP4.Checksum = ip4Checksum(respIP4)
                     respTCP.SetNetworkLayerForChecksum(respIP4)
+                    respTCP.Payload = payload
                     respTCP.Checksum, err = respTCP.ComputeChecksum()
                     gopacket.SerializeLayers(buf, opts,
                         respEth,
                         respIP4,
                         respTCP,
-                        gopacket.Payload(payloadStr))
+                        payload)
                     packetData := buf.Bytes()
                     err = handle.WritePacketData(packetData)
                     fmt.Printf("Replying to %s::%d\n", ip4.SrcIP.String(), tcp.SrcPort)
