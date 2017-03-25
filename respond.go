@@ -24,6 +24,18 @@ var testPacketBytes = []byte {
     0x0a,
 }
 
+func ip4Checksum(ip4 *layers.IPv4) uint16 {
+    sum := 0x4500 + uint32(ip4.Length) + uint32(ip4.Id) + (uint32(ip4.TTL) << 8) + uint32(ip4.Protocol)
+    sum += (uint32(ip4.SrcIP[0]) << 8) + uint32(ip4.SrcIP[1])
+    sum += (uint32(ip4.SrcIP[2]) << 8) + uint32(ip4.SrcIP[3])
+    sum += (uint32(ip4.DstIP[0]) << 8) + uint32(ip4.DstIP[1])
+    sum += (uint32(ip4.DstIP[2]) << 8) + uint32(ip4.DstIP[3])
+    for sum > 0xFFFF {
+        sum = (sum & 0xFFFF) + sum >> 16
+    }
+    return uint16(-sum-1)
+}
+
 func main() {
     var (
         device       string = "eth0"
@@ -61,53 +73,55 @@ func main() {
 
                 for _, layerType := range decoded {
                     switch layerType {
-                    case layers.LayerTypeEthernet:
-                        respEth = &layers.Ethernet{
-                            DstMAC: eth.SrcMAC,
-                            SrcMAC: eth.DstMAC,
-                            EthernetType: layers.EthernetTypeIPv4,
-                        }
-                    case layers.LayerTypeIPv4:
-                        respIP4 = &layers.IPv4{
-                            DstIP: ip4.SrcIP,
-                            SrcIP: ip4.DstIP,
-                            Protocol: layers.IPProtocolTCP,
-                            Version: 4,
-                            IHL: 5,
-                            TTL: 100,
-                        }
-                    case layers.LayerTypeTCP:
-                        respTCP = &layers.TCP{
-                            DstPort: tcp.SrcPort,
-                            SrcPort: tcp.DstPort,
-                            Seq: tcp.Ack,
-                            Ack: tcp.Seq + uint32(len(tcp.Payload)),
-                            ACK: true,
-                            Window: 29,
-                            DataOffset: 21,
-                        }
+                        case layers.LayerTypeEthernet:
+                            respEth = &layers.Ethernet{
+                                DstMAC: eth.SrcMAC,
+                                SrcMAC: eth.DstMAC,
+                                EthernetType: layers.EthernetTypeIPv4,
+                            }
+                        case layers.LayerTypeIPv4:
+                            respIP4 = &layers.IPv4{
+                                DstIP: ip4.SrcIP,
+                                SrcIP: ip4.DstIP,
+                                Protocol: layers.IPProtocolTCP,
+                                Version: 4,
+                                IHL: 5,
+                                TTL: 100,
+                            }
+                        case layers.LayerTypeTCP:
+                            if tcp.DstPort == 80 {
+                                respTCP = &layers.TCP{
+                                    DstPort: tcp.SrcPort,
+                                    SrcPort: tcp.DstPort,
+                                    Seq: tcp.Ack,
+                                    Ack: tcp.Seq + uint32(len(tcp.Payload)),
+                                    ACK: true,
+                                    Window: 29,
+                                    DataOffset: 21,
+                                }
+                            }
                     }
                 }
                 if respEth != nil && respIP4 != nil && respTCP != nil {
                     const payloadStr = "HTTP/1.1 404 Not Found\r\n"
                     buf := gopacket.NewSerializeBuffer()
                     opts := gopacket.SerializeOptions{}
+                    respIP4.Checksum = ip4Checksum(respIP4)
+                    respTCP.SetNetworkLayerForChecksum(respIP4)
+                    respTCP.Checksum, err = respTCP.ComputeChecksum()
                     gopacket.SerializeLayers(buf, opts,
                         respEth,
                         respIP4,
                         respTCP,
                         gopacket.Payload(payloadStr))
                     packetData := buf.Bytes()
-                    fmt.Printf("Replying to %s::%s\n", ip4.SrcIP.String(), tcp.SrcPort.String())
                     err = handle.WritePacketData(packetData)
+                    fmt.Printf("Replying to %s::%d\n", ip4.SrcIP.String(), tcp.SrcPort)
                     if err != nil {
                         fmt.Println(err)
                     }
                 }
-            } else {
-                fmt.Println(err)
             }
         }()
     }
 }
-
